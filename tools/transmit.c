@@ -113,7 +113,7 @@ static int play_callback( const void *inputBuffer, void *outputBuffer,
 				add_to_circ = vnucp_encode_append(data->mainss, 
 												&data->recordedSamples[data->frame_location],
 												num_og_samples,
-												(FP_TYPE)(rand() % 100) / 5000, // need noise TODO: 
+												.01, //(FP_TYPE)(rand() % 100) / 5000, // need noise TODO: 
 												&niy);
 
 				// Update that pointer
@@ -143,43 +143,47 @@ static int play_callback( const void *inputBuffer, void *outputBuffer,
 
 	int nread = framesPerBuffer;
 
-	SAMPLE * 
+	SAMPLE * read_from_circular;
 
 	if( framesLeft < framesPerBuffer)
 	{
 
 		nread = framesLeft;
 
-		vnucp_cbuffer_read(data->cbuff, & nread);
+		read_from_circular = vnucp_cbuffer_read(data->cbuff, & nread);
 
 
 		for(i = 0; i < framesLeft; i++){
 		
-			*out++ = *data_to_blast++;
+			*out++ = *read_from_circular++;
 			
 		}
 		for(;i<framesPerBuffer;i++){
 			*out++=0;
 		}
-		data->frame_location += framesLeft;
+
+		//data->frame_location += framesLeft;
 		finished = paComplete;
 
 	}
 	else
 	{
 
-		vnucp_cbuffer_read(buff, & nread);
+		read_from_circular = vnucp_cbuffer_read(data->cbuff, & nread);
 
 		for(i = 0; i < framesPerBuffer; i++){
 			*curr_noise++ = (*in_noise++) * 1.0 / 32677;
 			
-			*out++ = *data_to_blast++;
+			*out++ = *read_from_circular++;
 			
 	
 		}
-		data->frame_location += framesPerBuffer;
+		//data->frame_location += framesPerBuffer;
 		finished = paContinue;
 	}
+
+	data->circ_buff_use -= nread;
+
 	return finished;
 
 }
