@@ -10,7 +10,7 @@ vnucpe: $(OBJS) vnucpe.c
 	$(CC) $(CFLAGS) -o vnucpe vnucpe.c $(OBJS) -lm -lportaudio -lpthread
 
 vnucpd: $(OBJS) vnucpd.c
-	$(CC) $(CFLAGS) -o vnucpd vnucpd.c $(OBJS) -lm
+	$(CC) $(CFLAGS) -o vnucpd vnucpd.c $(OBJS) -lm -lportaudio -lpthread
 
 test-cbuffer: $(OBJS) test/test-cbuffer.c
 	$(CC) $(CFLAGS) -o test-cbuffer test/test-cbuffer.c $(OBJS) -lm

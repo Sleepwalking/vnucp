@@ -83,6 +83,8 @@ vnucp_esession* vnucp_encode_begin(vnucp_config config) {
     (FP_TYPE)(VNUCP_FC0 + VNUCP_BW) / config.fs * 2, "hamming");
   ret -> h1 = fir1bp(VNUCP_BPFORD, (FP_TYPE)(VNUCP_FC1 - VNUCP_BW) / config.fs * 2,
     (FP_TYPE)(VNUCP_FC1 + VNUCP_BW) / config.fs * 2, "hamming");
+  //ret -> h1 = fir1(VNUCP_BPFORD, (FP_TYPE)(VNUCP_FC1 - VNUCP_BW) / config.fs * 2,
+  //  "highpass", "hamming");
   FP_TYPE* blank = calloc(VNUCP_MAXCHUNK / 2, sizeof(FP_TYPE));
   vnucp_cbuffer_append(ret -> buffer0, blank, blank + VNUCP_MAXCHUNK / 2);
   vnucp_cbuffer_append(ret -> buffer1, blank, blank + VNUCP_MAXCHUNK / 2);
@@ -130,6 +132,7 @@ FP_TYPE* vnucp_encode_append(vnucp_esession* session, char* bitdata, int ndata,
       chunk[j] = sin(session -> osc0) * currbit;
       session -> osc0 += 2.0 * M_PI / session -> config.fs * VNUCP_FC0;
     }
+    session -> osc0 -= round(session -> osc0 / 2.0 / M_PI) * 2.0 * M_PI;
     vnucp_cbuffer_append(session -> buffer0, chunk, chunk + currinterval);
     
     // update channel 1 (clock)
@@ -137,6 +140,7 @@ FP_TYPE* vnucp_encode_append(vnucp_esession* session, char* bitdata, int ndata,
       chunk[j] = sin(session -> osc1) * (session -> clock > 0 ? 1.0 : 0);
       session -> osc1 += 2.0 * M_PI / session -> config.fs * VNUCP_FC1;
     }
+    session -> osc1 -= round(session -> osc1 / 2.0 / M_PI) * 2.0 * M_PI;
     vnucp_cbuffer_append(session -> buffer1, chunk, chunk + currinterval);
 
     // BPF & mixing
@@ -188,6 +192,8 @@ vnucp_dsession* vnucp_decode_begin(vnucp_config config) {
   ret -> buffer1 = vnucp_create_cbuffer(VNUCP_MAXCHUNK * 2);
   ret -> h0 = fir1bp(VNUCP_BPFORD_D, (FP_TYPE)(VNUCP_FC0 - 10) / config.fs * 2,
     (FP_TYPE)(VNUCP_FC0 + 10) / config.fs * 2, "hamming");
+  //ret -> h1 = fir1(VNUCP_BPFORD_D, (FP_TYPE)(VNUCP_FC1 - 10) / config.fs * 2,
+  //  "highpass", "hamming");
   ret -> h1 = fir1bp(VNUCP_BPFORD_D, (FP_TYPE)(VNUCP_FC1 - 10) / config.fs * 2,
     (FP_TYPE)(VNUCP_FC1 + 10) / config.fs * 2, "hamming");
   ret -> hs = fir1(VNUCP_BPFORD, 500.0 / config.fs * 2, "lowpass", "hamming");
@@ -283,6 +289,9 @@ static FP_TYPE* vnucp_decode_update_smoother(vnucp_dsession* session, int* ndata
     *ndata = 0;
 
   nz = nzcr > 1 ? zcridx[nzcr - 1] - VNUCP_CHUNKHEAD : nz;
+
+  //for(int i = 0; i < nz; i ++)
+  //  fprintf(stderr, "%e, %e\n", y0[VNUCP_CHUNKHEAD + i], y1[VNUCP_CHUNKHEAD + i]);
   session -> buffer0 -> rpos = (session -> buffer0 -> rpos + nz) %
     session -> buffer0 -> size;
   session -> buffer1 -> rpos = session -> buffer0 -> rpos;

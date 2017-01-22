@@ -1,8 +1,8 @@
 #ifndef VNUCP_H
 #define VNUCP_H
 
-#define VNUCP_FC0         20000
-#define VNUCP_FC1         21000
+#define VNUCP_FC0         19500
+#define VNUCP_FC1         20500
 #define VNUCP_BW          500
 #define VNUCP_BPFORD      64
 #define VNUCP_BPFORD_D    80
