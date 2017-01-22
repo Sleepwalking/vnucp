@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -Og -g -std=c99 -DFP_TYPE=float
+CFLAGS = -Ofast -g -std=c99 -DFP_TYPE=float
 OBJS = vnucp.o ciglet.o
 TARGETS = vnucpe vnucpd
 

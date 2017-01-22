@@ -1,3 +1,5 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include "vnucp.h"
 #include "external/ciglet/ciglet.h"
 #include <stdio.h>
@@ -83,10 +85,10 @@ vnucp_esession* vnucp_encode_begin(vnucp_config config) {
     (FP_TYPE)(VNUCP_FC0 + VNUCP_BW) / config.fs * 2, "hamming");
   ret -> h1 = fir1bp(VNUCP_BPFORD, (FP_TYPE)(VNUCP_FC1 - VNUCP_BW) / config.fs * 2,
     (FP_TYPE)(VNUCP_FC1 + VNUCP_BW) / config.fs * 2, "hamming");
-  FP_TYPE* white = calloc(VNUCP_MAXCHUNK / 2, sizeof(FP_TYPE));
-  vnucp_cbuffer_append(ret -> buffer0, white, white + VNUCP_MAXCHUNK / 2);
-  vnucp_cbuffer_append(ret -> buffer1, white, white + VNUCP_MAXCHUNK / 2);
-  free(white);
+  FP_TYPE* blank = calloc(VNUCP_MAXCHUNK / 2, sizeof(FP_TYPE));
+  vnucp_cbuffer_append(ret -> buffer0, blank, blank + VNUCP_MAXCHUNK / 2);
+  vnucp_cbuffer_append(ret -> buffer1, blank, blank + VNUCP_MAXCHUNK / 2);
+  free(blank);
   return ret;
 }
 
@@ -167,10 +169,10 @@ FP_TYPE* vnucp_encode_append(vnucp_esession* session, char* bitdata, int ndata,
 }
 
 FP_TYPE* vnucp_encode_finalize(vnucp_esession* session, int* ny) {
-  FP_TYPE* white = calloc(VNUCP_MAXCHUNK / 2, sizeof(FP_TYPE));
-  vnucp_cbuffer_append(session -> buffer0, white, white + VNUCP_MAXCHUNK / 2);
-  vnucp_cbuffer_append(session -> buffer1, white, white + VNUCP_MAXCHUNK / 2);
-  free(white);
+  FP_TYPE* blank = calloc(VNUCP_MAXCHUNK / 2, sizeof(FP_TYPE));
+  vnucp_cbuffer_append(session -> buffer0, blank, blank + VNUCP_MAXCHUNK / 2);
+  vnucp_cbuffer_append(session -> buffer1, blank, blank + VNUCP_MAXCHUNK / 2);
+  free(blank);
   FP_TYPE* y = vnucp_encode_update_buffer(session, ny);
   vnucp_delete_cbuffer(session -> buffer0);
   vnucp_delete_cbuffer(session -> buffer1);
@@ -178,4 +180,158 @@ FP_TYPE* vnucp_encode_finalize(vnucp_esession* session, int* ny) {
   free(session -> h1);
   free(session);
   return y;
+}
+
+vnucp_dsession* vnucp_decode_begin(vnucp_config config) {
+  vnucp_dsession* ret = malloc(sizeof(vnucp_dsession));
+  ret -> config = config;
+  ret -> srcbuffer = vnucp_create_cbuffer(VNUCP_MAXCHUNK);
+  ret -> buffer0 = vnucp_create_cbuffer(VNUCP_MAXCHUNK * 2);
+  ret -> buffer1 = vnucp_create_cbuffer(VNUCP_MAXCHUNK * 2);
+  ret -> h0 = fir1bp(VNUCP_BPFORD_D, (FP_TYPE)(VNUCP_FC0 - 10) / config.fs * 2,
+    (FP_TYPE)(VNUCP_FC0 + 10) / config.fs * 2, "hamming");
+  ret -> h1 = fir1bp(VNUCP_BPFORD_D, (FP_TYPE)(VNUCP_FC1 - 10) / config.fs * 2,
+    (FP_TYPE)(VNUCP_FC1 + 10) / config.fs * 2, "hamming");
+  ret -> hs = fir1(VNUCP_BPFORD, 500.0 / config.fs * 2, "lowpass", "hamming");
+  FP_TYPE* blank = calloc(VNUCP_CHUNKTAIL * 2, sizeof(FP_TYPE));
+  vnucp_cbuffer_append(ret -> srcbuffer, blank, blank + VNUCP_CHUNKTAIL * 2);
+  vnucp_cbuffer_append(ret -> buffer0, blank, blank + VNUCP_CHUNKTAIL * 2);
+  vnucp_cbuffer_append(ret -> buffer1, blank, blank + VNUCP_CHUNKTAIL * 2);
+  free(blank);
+  return ret;
+}
+
+static void vnucp_decode_update_bpf(vnucp_dsession* session) {
+  int nx;
+  FP_TYPE* x = vnucp_cbuffer_peek(session -> srcbuffer, & nx);
+  FP_TYPE a[1] = {1.0};
+  FP_TYPE* x0 = filtfilt(session -> h0, VNUCP_BPFORD, a, 1, x, nx);
+  FP_TYPE* x1 = filtfilt(session -> h1, VNUCP_BPFORD, a, 1, x, nx);
+  int nz = nx - VNUCP_CHUNKHEAD - VNUCP_CHUNKTAIL;
+  for(int i = 0; i < nx; i ++) {
+    x0[i] = x0[i] * x0[i];
+    x1[i] = x1[i] * x1[i];
+  }
+
+  FP_TYPE* xp0 = x0 + VNUCP_CHUNKHEAD;
+  FP_TYPE* xp1 = x1 + VNUCP_CHUNKHEAD;
+  xp0 = vnucp_cbuffer_append(session -> buffer0, xp0, x0 + nx - VNUCP_CHUNKTAIL);
+  xp1 = vnucp_cbuffer_append(session -> buffer1, xp1, x1 + nx - VNUCP_CHUNKTAIL);
+  session -> srcbuffer -> rpos = (session -> srcbuffer -> rpos + xp0 - x0 - VNUCP_CHUNKHEAD) %
+    session -> srcbuffer -> size;
+  free(x0);
+  free(x1);
+  free(x);
+}
+
+static FP_TYPE diffsum(FP_TYPE* x, int t, int w) {
+  FP_TYPE ret = 0;
+  int i;
+  for(i = 0; i < w; i ++)
+    ret += (x[i] - x[t + i]) * (x[i] - x[t + i]);
+  return ret;
+}
+
+static FP_TYPE yincorr(FP_TYPE* x, int nx, int w) {
+  FP_TYPE normalizer = 0;
+  FP_TYPE maxcorr = -1;
+  for(int i = 1; i < nx - w; i ++) {
+    FP_TYPE diff = diffsum(x, i, w);
+    normalizer += diff;
+    FP_TYPE d = - diff * (FP_TYPE)i / (normalizer <= 1e-15 ? 1e-15 : normalizer);
+    if(i >= 5)
+      maxcorr = fmax(maxcorr, d);
+  }
+  return maxcorr;
+}
+
+// assume that x1 starts (at VNUCP_CHUNKHEAD) at a zero-crossing
+static FP_TYPE* vnucp_decode_update_smoother(vnucp_dsession* session, int* ndata) {
+  int nx;
+  FP_TYPE* x0 = vnucp_cbuffer_peek(session -> buffer0, & nx);
+  FP_TYPE* x1 = vnucp_cbuffer_peek(session -> buffer1, & nx);
+  FP_TYPE a[1] = {1.0};
+  FP_TYPE* y0 = filtfilt(session -> hs, VNUCP_BPFORD, a, 1, x0, nx);
+  FP_TYPE* y1 = filtfilt(session -> hs, VNUCP_BPFORD, a, 1, x1, nx);
+  int nz = nx - VNUCP_CHUNKHEAD - VNUCP_CHUNKTAIL;
+  for(int i = 0; i < nx; i ++) {
+    y0[i] = sqrt(fmax(1e-10, y0[i]));
+    y1[i] = sqrt(fmax(1e-10, y1[i]));
+  }
+  FP_TYPE threshold = meanfp(y1, nx);
+  FP_TYPE data_threshold = max(threshold, maxfp(y0, nx) / 2);
+
+  // downsample and periodicity detection
+  FP_TYPE* y1d = calloc(nx / 8, sizeof(FP_TYPE));
+  for(int i = 0; i < nx / 8; i ++) y1d[i] = y1[i * 8];
+  FP_TYPE ycorr = yincorr(y1d, nx / 8, nx / 8 / 4);
+  free(y1d);
+
+  int intervalmin = session -> config.rate_min * session -> config.fs * 0.8;
+  int zcridx[100]; zcridx[0] = VNUCP_CHUNKHEAD; int nzcr = 1;
+  for(int i = VNUCP_CHUNKHEAD + intervalmin; i < nx - VNUCP_CHUNKTAIL; i ++)
+    if((y1[i] > threshold) != (y1[i - 1] > threshold)) {
+      zcridx[nzcr ++] = i;
+    }
+
+  FP_TYPE* data = NULL;
+  if(ycorr > -0.2) {
+    data = calloc(nzcr - 1, sizeof(FP_TYPE));
+    for(int i = 0; i < nzcr - 1; i ++)
+      data[i] = (medianfp(y0 + zcridx[i], zcridx[i + 1] - zcridx[i]) - data_threshold)
+        / data_threshold;
+    *ndata = nzcr - 1;
+  } else
+    *ndata = 0;
+
+  nz = nzcr > 1 ? zcridx[nzcr - 1] - VNUCP_CHUNKHEAD : nz;
+  session -> buffer0 -> rpos = (session -> buffer0 -> rpos + nz) %
+    session -> buffer0 -> size;
+  session -> buffer1 -> rpos = session -> buffer0 -> rpos;
+  free(x0);
+  free(x1);
+  free(y0);
+  free(y1);
+  return data;
+}
+
+FP_TYPE* vnucp_decode_append(vnucp_dsession* session, FP_TYPE* x, int nx, int* ndata) {
+  int data_capacity = 10;
+  int data_size = 0;
+  FP_TYPE* data = calloc(data_capacity, sizeof(FP_TYPE));
+
+  FP_TYPE* x_end = x + nx;
+  // keep feeding the buffer
+  while((x = vnucp_cbuffer_append(session -> srcbuffer, x, x_end)) != x_end) {
+    if(vnucp_cbuffer_getmargin(session -> srcbuffer) >= VNUCP_MAXCHUNK - VNUCP_CHUNKTAIL)
+      vnucp_decode_update_bpf(session);
+    if(vnucp_cbuffer_getmargin(session -> buffer0) >= VNUCP_MAXCHUNK * 1.5) {
+      int csize;
+      FP_TYPE* chunk = vnucp_decode_update_smoother(session, & csize);
+      if(data_size + csize > data_capacity) {
+        data_capacity = (data_size + csize) * 2;
+        data = realloc(data, data_capacity * sizeof(FP_TYPE));
+      }
+      for(int i = 0; i < csize; i ++)
+        data[data_size ++] = chunk[i];
+      free(chunk);
+    }
+  }
+  *ndata = data_size;
+  return data;
+}
+
+FP_TYPE* vnucp_decode_finalize(vnucp_dsession* session, int* ndata) {
+  FP_TYPE* blank = calloc(VNUCP_MAXCHUNK, sizeof(FP_TYPE));
+  vnucp_cbuffer_append(session -> srcbuffer, blank, blank + VNUCP_MAXCHUNK);
+  free(blank);
+  vnucp_decode_update_bpf(session);
+  FP_TYPE* chunk = vnucp_decode_update_smoother(session, ndata);
+  vnucp_delete_cbuffer(session -> srcbuffer);
+  vnucp_delete_cbuffer(session -> buffer0);
+  vnucp_delete_cbuffer(session -> buffer1);
+  free(session -> h0); free(session -> h1);
+  free(session -> hs);
+  free(session);
+  return chunk;
 }

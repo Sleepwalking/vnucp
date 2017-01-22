@@ -3,7 +3,7 @@
 
 int main() {
   char data[500];
-  for(int i = 0; i < 500; i ++) data[i] = rand() % 2;
+  for(int i = 0; i < 500; i ++) data[i] = (i % 5) == 0;
 
   vnucp_config maincfg = vnucp_new();
   vnucp_esession* mainss = vnucp_encode_begin(maincfg);
