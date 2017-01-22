@@ -1,5 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
-
 #include "vnucp.h"
 #include "external/ciglet/ciglet.h"
 #include <stdio.h>

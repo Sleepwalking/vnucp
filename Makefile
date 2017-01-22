@@ -7,7 +7,7 @@ default: $(TARGETS)
 test: test-cbuffer
 
 vnucpe: $(OBJS) vnucpe.c
-	$(CC) $(CFLAGS) -o vnucpe vnucpe.c $(OBJS) -lm
+	$(CC) $(CFLAGS) -o vnucpe vnucpe.c $(OBJS) -lm -lportaudio -lpthread
 
 vnucpd: $(OBJS) vnucpd.c
 	$(CC) $(CFLAGS) -o vnucpd vnucpd.c $(OBJS) -lm
