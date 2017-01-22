@@ -28,7 +28,6 @@ typedef struct
       	int audio_mask;
       	int data_index;
       	int max_data;
-
     }
   	paTestData;
 
@@ -40,8 +39,6 @@ static int play_callback(   const void *inputBuffer, void *outputBuffer,
 							void *userData 
 						)
 {
-
-
 
 	paTestData *data = (paTestData*)userData;
 	FP_TYPE * out = (FP_TYPE *) outputBuffer;
@@ -162,9 +159,7 @@ static int play_callback(   const void *inputBuffer, void *outputBuffer,
 		data->circ_buff_use += niy;
 		
 		if(final == 1){
-			printf("Final: %d\n", final);
 			just_be_done = 1;
-			//	printf("meeeeeeeeeeeeeeek\n");
 		}
 
 	}
