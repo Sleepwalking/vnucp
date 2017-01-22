@@ -5,6 +5,9 @@
 #include "../vnucp.h"
 #include "../external/ciglet/ciglet.h"
 #include <math.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #define SAMPLE_RATE (44100)
 
@@ -16,7 +19,8 @@ typedef short SAMPLE;
 typedef struct
     {
     	int max_frame;
-      	SAMPLE    *     recordedSamples;
+    	char * embedded_data;
+      	FP_TYPE    *     recordedSamples;
       	FP_TYPE *  noise_buffer;
       	int frame_location;
       	FP_TYPE average_noise;
@@ -26,6 +30,9 @@ typedef struct
       	vnucp_esession* mainss;
       	int circ_buff_use;
       	vnucp_cbuffer* cbuff;
+      	int audio_mask;
+      	int data_index;
+      	int max_data;
 
     }
   	paTestData;
@@ -42,13 +49,14 @@ static int play_callback( const void *inputBuffer, void *outputBuffer,
 
 
 	paTestData *data = (paTestData*)userData;
-	SAMPLE * data_to_blast = &data->recordedSamples[data->frame_location];
-	SAMPLE * out = (SAMPLE *) outputBuffer;
-	SAMPLE * in_noise = (SAMPLE *) inputBuffer;
+	//SAMPLE * data_to_blast = &data->recordedSamples[data->frame_location];
+	FP_TYPE * out = (FP_TYPE *) outputBuffer;
+	FP_TYPE * in_noise = (FP_TYPE *) inputBuffer;
 	FP_TYPE * curr_noise = (FP_TYPE *) data->noise_buffer;
 
 	int finished;
 	unsigned int framesLeft = data->max_frame - data->frame_location;
+	unsigned int dataLeft = data->max_data - data->data_index;
 	int i = 0;
 
 	FP_TYPE fc_low = 1.0*17000/22050.0;
@@ -90,7 +98,7 @@ static int play_callback( const void *inputBuffer, void *outputBuffer,
 	//printf("Smoothed Energy: %f\n", data->average_noise);
 
 
-	/////////////////////////////////////////////////////
+	///////////////////////////////////////////////////// the good stuff
 	int niy = 0;
 
 	int num_og_samples = 50;
@@ -99,34 +107,78 @@ static int play_callback( const void *inputBuffer, void *outputBuffer,
 
 	FP_TYPE * add_to_circ;
 
+
+	int niz = 0;
+
 	while(data->circ_buff_use < 512 && final != 1){
 
-		if(framesLeft < 50){
-			final = 1;
-			add_to_circ = vnucp_encode_finalize(mainss, & niy);
+		if(dataLeft < 8 && dataLeft != 0){
+
+			// Currently assume audio is longer than data.
+			if(!data->audio_mask){
+				final = 1;
+			}
+			
+
+			// Add encoded samples to the circular buffer
+				add_to_circ = vnucp_encode_append(data->mainss, 
+												&data->embedded_data[data->data_index],
+												dataLeft,
+												.01, //(FP_TYPE)(rand() % 100) / 5000, // need noise TODO: 
+												&niy);
+
+
+			vnucp_encode_finalize(data->mainss, & niz);
 			// Update that pointer
-			data->frame_location += framesLeft;
+			data->data_index += dataLeft;
 		}
-		else{
+		else if (dataLeft != 0){
 
 				// Add encoded samples to the circular buffer
 				add_to_circ = vnucp_encode_append(data->mainss, 
-												&data->recordedSamples[data->frame_location],
-												num_og_samples,
+												&data->embedded_data[data->data_index],
+												8,
 												.01, //(FP_TYPE)(rand() % 100) / 5000, // need noise TODO: 
 												&niy);
 
 				// Update that pointer
-				data->frame_location += num_og_samples;
+				data->data_index += 8;
+		}
+
+
+
+		if(data->audio_mask){
+
+			if(niy > 0){
+
+				for(int z = 0; z < niy; z++){
+					data->recordedSamples[data->frame_location + z] += add_to_circ[z];
+				}
+
+			}
+			else{
+
+				if(framesLeft < 257) {
+					niy = framesLeft;
+					final = 1;
+				}
+				else{
+					niy = 257;
+				}
+
+			}
+
+			add_to_circ = &data->recordedSamples[data->frame_location];		
+
 		}
 
 		// Have the items to add to circular buffer and the amount of them
-		FP_TYPE add_p = add_to_circ;
+		FP_TYPE* add_p = add_to_circ;
 
 //		FP_TYPE diff = add_to_circ; might need this idk...
 
-		// Writes the buffer of encoded samples to the circular buffer
-		while(add_p = vnucp_cbuffer_append(data->cbuff, add_p, add_to_circ + niy) != add_to_circ + niy);
+		// Writes the buffer of encoded samples to the circular buffer 
+		while((add_p = vnucp_cbuffer_append(data->cbuff, add_p, add_to_circ + niy)) != add_to_circ + niy);
 
 		// Now we know we have niy more samples
 		data->circ_buff_use += niy;
@@ -143,17 +195,25 @@ static int play_callback( const void *inputBuffer, void *outputBuffer,
 
 	int nread = framesPerBuffer;
 
-	SAMPLE * read_from_circular;
+	FP_TYPE * read_from_circular;
 
-	if( framesLeft < framesPerBuffer)
+
+	int writesLeft = dataLeft;
+
+	if(data->audio_mask){
+		writesLeft = framesLeft;
+	}
+
+
+	if( writesLeft < framesPerBuffer)
 	{
 
-		nread = framesLeft;
+		nread = writesLeft;
 
 		read_from_circular = vnucp_cbuffer_read(data->cbuff, & nread);
 
 
-		for(i = 0; i < framesLeft; i++){
+		for(i = 0; i < writesLeft; i++){
 		
 			*out++ = *read_from_circular++;
 			
@@ -191,50 +251,104 @@ static int play_callback( const void *inputBuffer, void *outputBuffer,
 
 int main(int argc, char * argv[]){
 
+	static paTestData data;
 
-	if (argc != 2){
-		printf("Usage: ./transmit <data>\n");
+	data.audio_mask = 0;
+
+	char * audio_name;
+
+	if (argc == 1 || argc > 3){
+		printf("Usage: ./transmit <data binary> <optional embedded audio data>\n");
 		exit(0);
 	}
+	else if(argc == 3){
+
+		audio_name = argv[2];
+		data.audio_mask = 1;
+
+	}
+	
+	char * binary_dat = argv[1];
+
 
 	PaStream *stream;
  	PaError err;
 
-	static paTestData data;
 
 	// Init the final thing
 	vnucp_config maincfg = vnucp_new();
-	data->mainss = vnucp_encode_begin(maincfg);
+	data.mainss = vnucp_encode_begin(maincfg);
 
 
-	SF_INFO file_info;
-	SNDFILE* wav_file =  sf_open(argv[1], SFM_READ, &file_info);
+	//SF_INFO file_info_dat;
+	//SNDFILE* dat_file =  sf_open(binary_dat, SFM_READ, &file_info_dat);
+
+	FILE * dat_file = fopen(binary_dat, "r");
+
+	fseek(dat_file, 0L, SEEK_END);
+	int dat_frames = ftell(dat_file);
+	rewind(dat_file);
+
+
+	SF_INFO file_info_audio;
+	SNDFILE* audio_file; 
+
+	file_info_audio.frames = 0;
+
+	if(data.audio_mask){
+		audio_file =  sf_open(audio_name, SFM_READ, &file_info_audio);
+	}
 
 	//printf("Num frames = %d\n", (int) file_info.frames);
 
-	data.recordedSamples = (short *) malloc(sizeof(short) * file_info.frames);
+	data.embedded_data = (char *) malloc(sizeof(char) * dat_frames);
+
+	if(data.audio_mask) {
+		data.recordedSamples = (FP_TYPE *) malloc(sizeof(FP_TYPE) * file_info_audio.frames);
+	}
 
 	data.noise_buffer = (FP_TYPE *) malloc(sizeof(FP_TYPE) * 512);
-	data.noise_index = 1;
+	data.noise_index = 0;
 
 	//printf("here -  before : %hd\n", data.recordedSamples[400]);
 	//printf("here -  before : %f\n", data.noise_buffer[400]);
 
-	
 
 	//printf("here : %hd\n", data.recordedSamples[400]);
 
-	/////////////////////////////////////////////////////////
+	////////////////////////////////////////////////////////////////////////
 	data.frame_location = 0;
-	data.max_frame = file_info.frames;
+	data.max_frame = 0;
+	if(data.audio_mask){
+		data.max_frame = file_info_audio.frames; 
+	}
+	
 	data.circ_buff_use  = 0;
 	data.cbuff = vnucp_create_cbuffer(2048);
-	sf_read_short (wav_file, data.recordedSamples, file_info.frames);
+	data.data_index = 0;
+	data.max_data = dat_frames;
+
+	fread(data.embedded_data, dat_frames, 1, dat_file);
+
+	//sf_read_short (dat_file, data.embedded_data, file_info_dat.frames); //
+
+	// Need to change to read in chars and get same amount of info
+	//
+
+	if(data.audio_mask){
+		short * temp = (short *) malloc(sizeof(short) * file_info_audio.frames);
+		sf_read_short (audio_file, temp, file_info_audio.frames);
+		for(int z = 0; z < file_info_audio.frames; z++){
+			data.recordedSamples[z] = temp[z] * 1.0 / 32767;
+		}
+		free(temp);
+	}
+
 	// At this point we have the audio/binary file
 	// If we want to use something other than audio, we can
 	// just read binary files.  this is just easier i think in
 	// terms of easily reading audio files.
-
+	///////////////////////////////////////////////////////////////////////
 
    err = Pa_Initialize();
   if(err != paNoError) {
