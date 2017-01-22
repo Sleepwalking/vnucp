@@ -40,6 +40,10 @@ static int play_callback(   const void *inputBuffer, void *outputBuffer,
 						)
 {
 
+
+  int i = 0;
+  int k = 0;
+
 	paTestData *data = (paTestData*)userData;
 	FP_TYPE * out = (FP_TYPE *) outputBuffer;
 	FP_TYPE * in_noise = (FP_TYPE *) inputBuffer;
@@ -77,7 +81,6 @@ static int play_callback(   const void *inputBuffer, void *outputBuffer,
 	// Get the average noise with smoothing
 	FP_TYPE current_energy = sqrt(sum);
 	data->average_noise = .1 * current_energy + .9 * data->previous_energy; 
-
 
 	int niy = 0;
 	int niz = 0;
