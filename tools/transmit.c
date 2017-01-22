@@ -49,13 +49,15 @@ static int play_callback( const void *inputBuffer, void *outputBuffer,
 
 
 	paTestData *data = (paTestData*)userData;
-	//SAMPLE * data_to_blast = &data->recordedSamples[data->frame_location];
 	FP_TYPE * out = (FP_TYPE *) outputBuffer;
 	FP_TYPE * in_noise = (FP_TYPE *) inputBuffer;
 	FP_TYPE * curr_noise = (FP_TYPE *) data->noise_buffer;
 
 	int finished;
 	unsigned int framesLeft = data->max_frame - data->frame_location;
+
+	//printf("frames lefT : %d\n", framesLeft);
+
 	unsigned int dataLeft = data->max_data - data->data_index;
 	int i = 0;
 
@@ -83,7 +85,7 @@ static int play_callback( const void *inputBuffer, void *outputBuffer,
 	FP_TYPE* filtered_noise = filtfilt(noise_bp, 64, a, 1, curr_noise, 512);
 
 	// Sum the square of the signal values
-	FP_TYPE sum = 0;
+	FP_TYPE sum = 0.0;
 	for(k = 0; k < 512; k++){
 		sum += filtered_noise[k] * filtered_noise[k];
 	}
@@ -97,7 +99,6 @@ static int play_callback( const void *inputBuffer, void *outputBuffer,
 
 	//printf("Smoothed Energy: %f\n", data->average_noise);
 
-
 	///////////////////////////////////////////////////// the good stuff
 	int niy = 0;
 
@@ -110,9 +111,13 @@ static int play_callback( const void *inputBuffer, void *outputBuffer,
 
 	int niz = 0;
 
-	while(data->circ_buff_use < 512 && final != 1){
 
-		if(dataLeft < 8 && dataLeft != 0){
+	int just_be_done = 0;
+
+	while((data->circ_buff_use < 512) && (final != 1)){
+
+
+		if(dataLeft <= 8 && dataLeft != 0){
 
 			// Currently assume audio is longer than data.
 			if(!data->audio_mask){
@@ -128,7 +133,14 @@ static int play_callback( const void *inputBuffer, void *outputBuffer,
 												&niy);
 
 
+
+				//printf("NIYFINALS:  %d\n", niy);
+
 			vnucp_encode_finalize(data->mainss, & niz);
+
+
+			//	printf("NIYFasdasdasdasdINALS:  %d\n", niy);
+
 			// Update that pointer
 			data->data_index += dataLeft;
 		}
@@ -143,48 +155,73 @@ static int play_callback( const void *inputBuffer, void *outputBuffer,
 
 				// Update that pointer
 				data->data_index += 8;
-		}
 
+		}
 
 
 		if(data->audio_mask){
 
-			if(niy > 0){
+			if(dataLeft > 0){
 
 				for(int z = 0; z < niy; z++){
-					data->recordedSamples[data->frame_location + z] += add_to_circ[z];
+					data->recordedSamples[data->frame_location + z] +=  add_to_circ[z];
+					data->recordedSamples[data->frame_location + z] *= .6;
 				}
 
 			}
 			else{
 
-				if(framesLeft < 257) {
+
+				if(framesLeft <= 1000) {
 					niy = framesLeft;
+
 					final = 1;
 				}
 				else{
-					niy = 257;
+					niy = 1000;
+			
 				}
 
 			}
 
 			add_to_circ = &data->recordedSamples[data->frame_location];		
+			data->frame_location += niy;
 
 		}
 
 		// Have the items to add to circular buffer and the amount of them
 		FP_TYPE* add_p = add_to_circ;
 
-//		FP_TYPE diff = add_to_circ; might need this idk...
+		// FP_TYPE diff = add_to_circ; might need this idk...
+
+
+
+		int x = 0;
 
 		// Writes the buffer of encoded samples to the circular buffer 
-		while((add_p = vnucp_cbuffer_append(data->cbuff, add_p, add_to_circ + niy)) != add_to_circ + niy);
+		while((add_p = vnucp_cbuffer_append(data->cbuff, add_p, add_to_circ + niy)) != add_to_circ + niy){
+
+			printf("ADDP: %p\n", (void *)add_p);
+			x++;
+			if(x > 10){
+				printf("This is stuck here you dingus...\n");
+				exit(0);
+			}
+
+		}
 
 		// Now we know we have niy more samples
 		data->circ_buff_use += niy;
 		
+		if(final == 1){
+			printf("Final: %d\n", final);
+			just_be_done = 1;
+			//	printf("meeeeeeeeeeeeeeek\n");
+		}
 
 	}
+
+	//printf("no idea how this happen %d\n", data->circ_buff_use);
 
 	// Now we can pipe this through as audio.
 
@@ -198,31 +235,37 @@ static int play_callback( const void *inputBuffer, void *outputBuffer,
 	FP_TYPE * read_from_circular;
 
 
-	int writesLeft = dataLeft;
+	int writesLeft = data->circ_buff_use;
 
 	if(data->audio_mask){
+		just_be_done = 0;
 		writesLeft = framesLeft;
 	}
 
 
-	if( writesLeft < framesPerBuffer)
+	if( writesLeft < framesPerBuffer || just_be_done == 1)
 	{
 
 		nread = writesLeft;
 
+		//printf("nread %d\n", nread);
+
 		read_from_circular = vnucp_cbuffer_read(data->cbuff, & nread);
 
 
-		for(i = 0; i < writesLeft; i++){
+		for(i = 0; i < 200 ; i++){
 		
 			*out++ = *read_from_circular++;
 			
 		}
+
 		for(;i<framesPerBuffer;i++){
 			*out++=0;
 		}
 
 		//data->frame_location += framesLeft;
+		printf("Finishing\n");
+
 		finished = paComplete;
 
 	}
@@ -232,17 +275,22 @@ static int play_callback( const void *inputBuffer, void *outputBuffer,
 		read_from_circular = vnucp_cbuffer_read(data->cbuff, & nread);
 
 		for(i = 0; i < framesPerBuffer; i++){
-			*curr_noise++ = (*in_noise++) * 1.0 / 32677;
+			*curr_noise++ = (*in_noise++); //* 1.0 / 32767;
 			
+
 			*out++ = *read_from_circular++;
 			
 	
+			//printf("Finishing - fake\n");
+
 		}
 		//data->frame_location += framesPerBuffer;
 		finished = paContinue;
 	}
 
 	data->circ_buff_use -= nread;
+
+	//printf("or this....... %d\n", data->circ_buff_use);	
 
 	return finished;
 
@@ -251,11 +299,11 @@ static int play_callback( const void *inputBuffer, void *outputBuffer,
 
 int main(int argc, char * argv[]){
 
-	static paTestData data;
+	paTestData  * data = (paTestData*) malloc(sizeof(paTestData));
 
-	data.audio_mask = 0;
+	data->audio_mask = 0;
 
-	char * audio_name;
+	char * audio_name = NULL;
 
 	if (argc == 1 || argc > 3){
 		printf("Usage: ./transmit <data binary> <optional embedded audio data>\n");
@@ -264,7 +312,7 @@ int main(int argc, char * argv[]){
 	else if(argc == 3){
 
 		audio_name = argv[2];
-		data.audio_mask = 1;
+		data->audio_mask = 1;
 
 	}
 	
@@ -272,43 +320,47 @@ int main(int argc, char * argv[]){
 
 
 	PaStream *stream;
- 	PaError err;
+ 	
 
 
 	// Init the final thing
 	vnucp_config maincfg = vnucp_new();
-	data.mainss = vnucp_encode_begin(maincfg);
+	data->mainss = vnucp_encode_begin(maincfg);
 
 
 	//SF_INFO file_info_dat;
 	//SNDFILE* dat_file =  sf_open(binary_dat, SFM_READ, &file_info_dat);
 
-	FILE * dat_file = fopen(binary_dat, "r");
+	FILE * dat_file = fopen(binary_dat, "rb");
 
 	fseek(dat_file, 0L, SEEK_END);
-	int dat_frames = ftell(dat_file);
+	int dat_frames = 0;
+
+	dat_frames = ftell(dat_file);
 	rewind(dat_file);
 
+
+	printf("datframes: %d\n", dat_frames);
 
 	SF_INFO file_info_audio;
 	SNDFILE* audio_file; 
 
 	file_info_audio.frames = 0;
 
-	if(data.audio_mask){
+	if(data->audio_mask && audio_name != NULL){
 		audio_file =  sf_open(audio_name, SFM_READ, &file_info_audio);
 	}
 
 	//printf("Num frames = %d\n", (int) file_info.frames);
 
-	data.embedded_data = (char *) malloc(sizeof(char) * dat_frames);
+	data->embedded_data = (char *) malloc(sizeof(char) * dat_frames);
 
-	if(data.audio_mask) {
-		data.recordedSamples = (FP_TYPE *) malloc(sizeof(FP_TYPE) * file_info_audio.frames);
+	if(data->audio_mask) {
+		data->recordedSamples = (FP_TYPE *) malloc(sizeof(FP_TYPE) * (file_info_audio.frames + 1));
 	}
 
-	data.noise_buffer = (FP_TYPE *) malloc(sizeof(FP_TYPE) * 512);
-	data.noise_index = 0;
+	data->noise_buffer = (FP_TYPE *) malloc(sizeof(FP_TYPE) * (512 + 1));
+	data->noise_index = 0;
 
 	//printf("here -  before : %hd\n", data.recordedSamples[400]);
 	//printf("here -  before : %f\n", data.noise_buffer[400]);
@@ -317,29 +369,33 @@ int main(int argc, char * argv[]){
 	//printf("here : %hd\n", data.recordedSamples[400]);
 
 	////////////////////////////////////////////////////////////////////////
-	data.frame_location = 0;
-	data.max_frame = 0;
-	if(data.audio_mask){
-		data.max_frame = file_info_audio.frames; 
+	data->frame_location = 0;
+	data->max_frame = 0;
+	if(data->audio_mask){
+		data->max_frame = file_info_audio.frames; 
 	}
 	
-	data.circ_buff_use  = 0;
-	data.cbuff = vnucp_create_cbuffer(2048);
-	data.data_index = 0;
-	data.max_data = dat_frames;
+	data->circ_buff_use  = 0;
+	data->cbuff = vnucp_create_cbuffer(8096);
+	data->data_index = 0;
+	data->max_data = dat_frames;
 
-	fread(data.embedded_data, dat_frames, 1, dat_file);
+	data->average_noise = 0;
+
+	int reads = fread(data->embedded_data, 1, dat_frames, dat_file);
+
+	printf("READS: %d\n",reads);
 
 	//sf_read_short (dat_file, data.embedded_data, file_info_dat.frames); //
 
 	// Need to change to read in chars and get same amount of info
 	//
 
-	if(data.audio_mask){
+	if(data->audio_mask){
 		short * temp = (short *) malloc(sizeof(short) * file_info_audio.frames);
 		sf_read_short (audio_file, temp, file_info_audio.frames);
 		for(int z = 0; z < file_info_audio.frames; z++){
-			data.recordedSamples[z] = temp[z] * 1.0 / 32767;
+			data->recordedSamples[z] = temp[z] * 1.0 / 32767;
 		}
 		free(temp);
 	}
@@ -349,6 +405,9 @@ int main(int argc, char * argv[]){
 	// just read binary files.  this is just easier i think in
 	// terms of easily reading audio files.
 	///////////////////////////////////////////////////////////////////////
+
+
+	PaError err = 0;
 
    err = Pa_Initialize();
   if(err != paNoError) {
@@ -360,18 +419,19 @@ int main(int argc, char * argv[]){
 
   PaDeviceIndex outdev = Pa_GetDefaultOutputDevice();
 
- // printf("out device number: %d\n", (int) outdev);
+  printf("size of FP_TYPE: %ld\n", sizeof(FP_TYPE));
+
 
   
   /* Open the Output to transmit binary data */
   err = Pa_OpenDefaultStream ( &stream,
   									1,
   									1,
-  									paInt16,
+  									paFloat32,
   									SAMPLE_RATE,
   									512, // Placeholder
   									play_callback,
-  									&data );
+  									data );
 
 
 
@@ -386,16 +446,23 @@ int main(int argc, char * argv[]){
 	  printf( "PortAudio error: %s\n", Pa_GetErrorText(err));
   	}
 
-  	printf("Waiting for playback to finish.\n"); fflush(stdout);
+  	//printf("Waiting for playback to finish.\n"); fflush(stdout);
 
 	while( ( err = Pa_IsStreamActive( stream ) ) == 1 ) Pa_Sleep(100);
 
+	if(err != paNoError) {
+	  printf( "fukkt PortAudio error: %s\n", Pa_GetErrorText(err));
+  }
 
+  	printf("stopping stream\n");
 
   	err = Pa_StopStream( stream );
 	if(err != paNoError) {
 	  printf( "PortAudio error: %s\n", Pa_GetErrorText(err));
   }
+
+
+  printf("closing stream\n");
 
 err = Pa_CloseStream( stream );
 if(err != paNoError) {
@@ -405,10 +472,10 @@ if(err != paNoError) {
 
   printf("Done transmitting sound\n");
 
-  printf("Average noise at end was %f\n", (float) data.average_noise);
+  printf("Average noise at end was %f\n",  data->average_noise);
 
 
-  printf("here -  after : %f\n", data.noise_buffer[400]);
+  printf("here -  after : %lf\n", data->noise_buffer[400]);
 
   err = Pa_Terminate();
   if(err != paNoError) {
